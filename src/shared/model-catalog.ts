@@ -1,0 +1,356 @@
+import type { CodexOutputVerbosity } from './contracts.ts'
+
+export type CodexModelModality = 'text' | 'image'
+
+export const GPT_56_MAX_CONTEXT_WINDOW = 1_000_000
+// Codex subscription limits from the model catalog; the public API advertises 1.05M
+// for these families instead.
+export const GPT_6_MAX_CONTEXT_WINDOW = 872_000
+/** Default context for GPT-6 models other than the 500K GPT-6.1 Terra entry. */
+export const GPT_6_DEFAULT_CONTEXT_WINDOW = 272_000
+/** Output cap of the GPT-6 family; the vendor declares 128K for all three. */
+export const GPT_6_MAX_TOKENS = 128_000
+/** Output cap for the models predating the GPT-6 family. */
+export const CODEX_DEFAULT_MAX_TOKENS = 32_768
+
+/**
+ * What one model speaks on the wire.
+ *
+ * Kept apart from the catalog entry on purpose: this is a property of the
+ * PROTOCOL the model speaks, not of the account's entitlement to it, and the
+ * request builder needs it per attempt rather than per picker row.
+ */
+export interface CodexWireCapabilities {
+  /** Whether the model speaks the Responses Lite protocol. */
+  useResponsesLite: boolean
+}
+
+export interface CodexModelCatalogEntry {
+  id: string
+  name: string
+  contextWindow: number
+  inputModalities: readonly CodexModelModality[]
+  defaultReasoningEffort: string
+  reasoningProfile: 'standard' | 'gpt-5.6' | 'gpt-6'
+  supportsReasoningSummary: boolean
+  /**
+   * Whether the Responses `text.verbosity` control applies to this model.
+   *
+   * Official Codex gates the field on the catalog's own `support_verbosity`:
+   * a model that does not accept it is sent none, and the official client warns
+   * instead of guessing. An absent flag therefore means "not established" — this
+   * line will not invent the field for a model it has no evidence about.
+   */
+  supportsOutputVerbosity?: boolean
+  /**
+   * Verbosity the official client sends when the user has chosen none.
+   *
+   * Read from the same catalog: every model the backend currently lists declares
+   * `default_verbosity: "low"`, so "follow the provider" means low — not the
+   * server's own (medium) fallback, which is what omitting the field gets.
+   */
+  defaultOutputVerbosity?: CodexOutputVerbosity
+  /** Output cap when the caller omits one; falls back to {@link CODEX_DEFAULT_MAX_TOKENS}. */
+  maxTokens?: number
+  fallbackModelId?: string
+  /**
+   * Whether the model speaks the Responses Lite protocol.
+   *
+   * Lite is a different request SHAPE, not a different endpoint: the tool
+   * declarations travel inside `input` as an `additional_tools` item instead of
+   * a top-level `tools` array, the request carries a Lite header, and the
+   * reasoning block asks for the whole conversation as context.
+   *
+   * The official catalog states this per model, and the backend's live listing
+   * states it too, so a model this table has never heard of is NOT Lite: an
+   * absent flag means "not established", and inventing the Lite shape for a
+   * model that does not speak it is a request the backend cannot answer.
+   */
+  useResponsesLite?: boolean
+}
+
+export const CODEX_MODEL_CATALOG = [
+  {
+    id: 'gpt-5.6-sol',
+    name: '5.6 Sol',
+    contextWindow: 272_000,
+    inputModalities: ['text', 'image'],
+    defaultReasoningEffort: 'low',
+    reasoningProfile: 'gpt-5.6',
+    supportsReasoningSummary: true,
+    fallbackModelId: 'gpt-5.6-terra',
+    supportsOutputVerbosity: true,
+    defaultOutputVerbosity: 'low',
+    useResponsesLite: true,
+  },
+  {
+    id: 'gpt-6-astra',
+    name: '6 Astra',
+    contextWindow: 272_000,
+    inputModalities: ['text', 'image'],
+    defaultReasoningEffort: 'low',
+    reasoningProfile: 'gpt-6',
+    supportsReasoningSummary: true,
+    maxTokens: GPT_6_MAX_TOKENS,
+    supportsOutputVerbosity: true,
+    defaultOutputVerbosity: 'low',
+    useResponsesLite: true,
+  },
+  {
+    id: 'gpt-6.1-sol',
+    name: '6.1 Sol',
+    contextWindow: 272_000,
+    inputModalities: ['text', 'image'],
+    defaultReasoningEffort: 'low',
+    reasoningProfile: 'gpt-6',
+    supportsReasoningSummary: true,
+    maxTokens: GPT_6_MAX_TOKENS,
+    supportsOutputVerbosity: true,
+    defaultOutputVerbosity: 'low',
+    useResponsesLite: true,
+  },
+  {
+    id: 'gpt-6.1-terra',
+    name: '6.1 Terra',
+    contextWindow: 500_000,
+    inputModalities: ['text', 'image'],
+    defaultReasoningEffort: 'low',
+    reasoningProfile: 'gpt-6',
+    supportsReasoningSummary: true,
+    maxTokens: GPT_6_MAX_TOKENS,
+    supportsOutputVerbosity: true,
+    defaultOutputVerbosity: 'low',
+    useResponsesLite: true,
+  },
+  {
+    id: 'gpt-6-sol',
+    name: '6 Sol',
+    contextWindow: 272_000,
+    inputModalities: ['text', 'image'],
+    defaultReasoningEffort: 'medium',
+    reasoningProfile: 'gpt-6',
+    supportsReasoningSummary: true,
+    maxTokens: GPT_6_MAX_TOKENS,
+    supportsOutputVerbosity: true,
+    defaultOutputVerbosity: 'low',
+    useResponsesLite: true,
+  },
+  {
+    id: 'gpt-6-luna',
+    name: '6 Luna',
+    contextWindow: 272_000,
+    inputModalities: ['text', 'image'],
+    defaultReasoningEffort: 'medium',
+    reasoningProfile: 'gpt-6',
+    supportsReasoningSummary: true,
+    maxTokens: GPT_6_MAX_TOKENS,
+    supportsOutputVerbosity: true,
+    defaultOutputVerbosity: 'low',
+    useResponsesLite: true,
+  },
+  {
+    id: 'gpt-5.6-terra',
+    name: '5.6 Terra',
+    contextWindow: 272_000,
+    inputModalities: ['text', 'image'],
+    defaultReasoningEffort: 'medium',
+    reasoningProfile: 'gpt-5.6',
+    supportsReasoningSummary: true,
+    fallbackModelId: 'gpt-5.5',
+    supportsOutputVerbosity: true,
+    defaultOutputVerbosity: 'low',
+    useResponsesLite: true,
+  },
+  {
+    id: 'gpt-5.6-luna',
+    name: '5.6 Luna',
+    contextWindow: 272_000,
+    inputModalities: ['text', 'image'],
+    defaultReasoningEffort: 'medium',
+    reasoningProfile: 'gpt-5.6',
+    supportsReasoningSummary: true,
+    fallbackModelId: 'gpt-5.5',
+    supportsOutputVerbosity: true,
+    defaultOutputVerbosity: 'low',
+    useResponsesLite: true,
+  },
+  {
+    id: 'gpt-5.5',
+    name: '5.5',
+    contextWindow: 272_000,
+    inputModalities: ['text', 'image'],
+    defaultReasoningEffort: 'medium',
+    reasoningProfile: 'standard',
+    supportsReasoningSummary: true,
+    supportsOutputVerbosity: true,
+    defaultOutputVerbosity: 'low',
+  },
+  {
+    id: 'gpt-5.4',
+    name: '5.4',
+    contextWindow: 272_000,
+    inputModalities: ['text', 'image'],
+    defaultReasoningEffort: 'none',
+    reasoningProfile: 'standard',
+    supportsReasoningSummary: true,
+    fallbackModelId: 'gpt-5.4-mini',
+  },
+  {
+    id: 'gpt-5.4-mini',
+    name: '5.4 Mini',
+    contextWindow: 272_000,
+    inputModalities: ['text', 'image'],
+    defaultReasoningEffort: 'none',
+    reasoningProfile: 'standard',
+    supportsReasoningSummary: true,
+  },
+  {
+    id: 'gpt-5.3-codex-spark',
+    name: '5.3 Codex Spark',
+    contextWindow: 258_000,
+    inputModalities: ['text'],
+    defaultReasoningEffort: 'high',
+    reasoningProfile: 'standard',
+    supportsReasoningSummary: false,
+  },
+] as const satisfies readonly CodexModelCatalogEntry[]
+
+export type CodexModelId = typeof CODEX_MODEL_CATALOG[number]['id']
+
+export const DEFAULT_VISIBLE_CODEX_MODEL_IDS = [
+  'gpt-6-astra',
+  'gpt-6.1-sol',
+  'gpt-6.1-terra',
+  'gpt-6-sol',
+  'gpt-6-luna',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+] as const satisfies readonly CodexModelId[]
+
+export const DEFAULT_CODEX_MODEL = CODEX_MODEL_CATALOG[0]
+
+export const STANDARD_REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh'] as const
+export const GPT_56_REASONING_EFFORTS = [...STANDARD_REASONING_EFFORTS, 'max'] as const
+// Ultra in Codex also controls subagent orchestration; expose the Responses efforts here.
+export const GPT_6_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+export type CodexReasoningEffort = typeof GPT_56_REASONING_EFFORTS[number]
+
+export function reasoningEffortsForModel(model: string): readonly CodexReasoningEffort[] {
+  const profile = resolveCodexCatalogEntry(model).reasoningProfile
+  if (profile === 'gpt-6') return GPT_6_REASONING_EFFORTS
+  return profile === 'gpt-5.6'
+    ? GPT_56_REASONING_EFFORTS
+    : STANDARD_REASONING_EFFORTS
+}
+
+export function isCodexReasoningEffort(value: unknown): value is CodexReasoningEffort {
+  return typeof value === 'string' && GPT_56_REASONING_EFFORTS.some((effort) => effort === value)
+}
+
+export function modelSupportsReasoningEffort(model: string, effort: unknown): effort is CodexReasoningEffort {
+  return isCodexReasoningEffort(effort) && reasoningEffortsForModel(model).some((candidate) => candidate === effort)
+}
+
+export function isCodexModelId(model: unknown): model is CodexModelId {
+  return typeof model === 'string' && CODEX_MODEL_CATALOG.some((entry) => entry.id === model)
+}
+
+/**
+ * Upper bound for one model's context window override. The Codex subscription
+ * caps the whole GPT-6 family at 872K and everything older at 1M, so a model's
+ * catalog default is where the number starts, not where it has to stay.
+ */
+export function contextWindowLimitForModel(model: CodexModelId): number {
+  return resolveCodexCatalogEntry(model).reasoningProfile === 'gpt-6'
+    ? GPT_6_MAX_CONTEXT_WINDOW
+    : GPT_56_MAX_CONTEXT_WINDOW
+}
+
+export function resolveCodexCatalogEntry(model: string): CodexModelCatalogEntry {
+  return CODEX_MODEL_CATALOG.find((entry) => entry.id === model) ?? DEFAULT_CODEX_MODEL
+}
+
+export function codexModelSupportsImageInput(model: string): boolean {
+  return resolveCodexCatalogEntry(model).inputModalities.includes('image')
+}
+
+export function codexModelSupportsReasoningSummary(model: string): boolean {
+  return resolveCodexCatalogEntry(model).supportsReasoningSummary
+}
+
+/**
+ * Whether the shipped table says this model speaks the Responses Lite protocol.
+ *
+ * An id this table has never heard of is NOT Lite. The official catalog states
+ * the flag per model and the backend's live listing states it too, so a model
+ * with no statement has no established Lite shape - and sending the Lite body
+ * to a model that does not speak it is a request the backend cannot answer.
+ *
+ * @param model - the model id.
+ * @returns whether the model is a Lite model.
+ */
+export function codexModelUsesResponsesLite(model: string): boolean {
+  return codexCatalogEntryById(model)?.useResponsesLite === true
+}
+
+/**
+ * One catalog entry by exact id, or undefined when this table has no record.
+ *
+ * Deliberately NOT {@link resolveCodexCatalogEntry}, which answers an unknown id
+ * with the default entry: that substitution is the right guide for a model whose
+ * capabilities only need a sensible floor, but it cannot tell "this model
+ * declares verbosity support" apart from "nobody said". A wire field must not be
+ * invented from silence.
+ */
+function codexCatalogEntryById(model: string): CodexModelCatalogEntry | undefined {
+  return CODEX_MODEL_CATALOG.find((entry) => entry.id === model)
+}
+
+/**
+ * Verbosity to send when the user has not chosen one.
+ *
+ * "Follow the provider" has to mean what the provider's own client sends. The
+ * official catalog declares `default_verbosity: "low"` for every model it
+ * lists, so the answer is low — not the server's implicit medium, which is what
+ * omitting the field gets.
+ *
+ * @returns the verbosity to send, or `undefined` to omit the field entirely.
+ */
+export function codexDefaultOutputVerbosity(model: string): CodexOutputVerbosity | undefined {
+  const entry = codexCatalogEntryById(model)
+  if (entry?.supportsOutputVerbosity !== true) return undefined
+  return entry.defaultOutputVerbosity ?? 'low'
+}
+
+/**
+ * Declared output ceiling for one model, or the pre-GPT-6 default when it
+ * declares none.
+ *
+ * This is NOT a request field. The subscription Responses endpoint rejects
+ * `max_output_tokens` outright (400 Unsupported parameter, issue #29 — and the
+ * official CLI's own request struct has no such field), so nothing is sent to
+ * the wire from here. The value reaches DSH only as the adapter's
+ * `defaultMaxTokens`, which compaction uses as a local completion reservation
+ * when it plans a fold; that number never leaves this process.
+ */
+export function codexModelMaxTokens(model: string): number {
+  return resolveCodexCatalogEntry(model).maxTokens ?? CODEX_DEFAULT_MAX_TOKENS
+}
+
+/**
+ * The effort the Responses wire accepts for one model. The GPT-6 family dropped
+ * `none`/`minimal`, so a request that still carries one — a session started on an
+ * older model, or the `none` default of a model this route no longer offers — is
+ * sent as `low` instead of being rejected.
+ */
+export function codexWireReasoningEffort(model: string, effort: string): string {
+  if (resolveCodexCatalogEntry(model).reasoningProfile !== 'gpt-6') return effort
+  return effort === 'none' || effort === 'minimal' ? 'low' : effort
+}
+
+export function resolveCodexFallbackModel(model: string): CodexModelCatalogEntry | undefined {
+  const entry = resolveCodexCatalogEntry(model)
+  if (!entry.fallbackModelId) return undefined
+  return CODEX_MODEL_CATALOG.find((cand) => cand.id === entry.fallbackModelId)
+}

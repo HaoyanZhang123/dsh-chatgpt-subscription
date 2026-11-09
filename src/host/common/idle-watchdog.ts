@@ -1,0 +1,103 @@
+import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
+import { LlmError } from '@deepseek-ai/dsh-llm'
+
+/**
+ * How long one stream may go without a single byte before it is called stalled.
+ *
+ * Strictly INSIDE the transport's own deadline on purpose. undici answers a
+ * stalled HTTP/2 stream at exactly 300 s, so the 300 s every line used to carry
+ * never decided anything: the watchdog and the transport expired together, the
+ * transport error won the race, and the turn paid the full five minutes of
+ * silence before DSH could retry — reported as a severed connection rather than
+ * as a stalled one. Two minutes is measured rather than guessed: over the 104
+ * requests of the session that prompted this value, the longest wait from a step
+ * starting to its first chunk was 65 s (a 210k-token prompt), and the longest
+ * silence once chunks were flowing was 6.4 s across 6,539 measured gaps. The
+ * adapters also pulse the watchdog when the response headers arrive, so a slow
+ * prefill is budgeted apart from in-stream silence instead of being read as a
+ * dead stream.
+ *
+ * `ollama/types.ts` deliberately keeps a longer budget: local inference is
+ * compute-bound, and a large prompt can legitimately take minutes to answer.
+ */
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 120_000
+export const STREAM_IDLE_TIMEOUT_CODE = 'LLM_STREAM_IDLE_TIMEOUT'
+
+/**
+ * The same budget under the name every provider adapter passes it by.
+ *
+ * Six provider `types.ts` files each declare their own
+ * `STREAM_IDLE_TIMEOUT_MS`, so one line ended up importing a sibling line's copy
+ * just to name the same number. This alias is the single home: an adapter that
+ * took the constant from another line can take it from here without renaming its
+ * local usage, and a line whose budget is its own (ollama) says so in its own
+ * `types.ts`.
+ */
+export const STREAM_IDLE_TIMEOUT_MS = DEFAULT_STREAM_IDLE_TIMEOUT_MS
+
+/**
+ * 传输层活动上报器。
+ *
+ * 计时以「收到传输层数据」为判据，而不是「解析器是否 yield 了可展示片段」：
+ * 业务过滤、展示缓冲、摘要截断都只影响展示，不改变连接是否活着。
+ */
+export interface StreamActivity {
+  /** 上报一次不产生消费端可见 chunk 的传输活动，用于重新计时。 */
+  pulse(): void
+}
+
+/** 看门狗包裹的流工厂：第二个参数可选，旧的单参调用点仍然合法。 */
+export type WatchdogSource<T> = (signal: AbortSignal, activity: StreamActivity) => AsyncIterable<T>
+
+/**
+ * 为异步流包裹可复位的空闲超时看门狗。
+ * 当流式 chunk 产出之间的间隔超过指定阈值时，主动终止并抛出带有 TIMEOUT 的 LlmError。
+ */
+export async function* wrapStreamWithWatchdog<T>(
+  source: WatchdogSource<T>,
+  upstreamSignal: AbortSignal | undefined,
+  timeoutMs: number = DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+  timeoutCode: string = STREAM_IDLE_TIMEOUT_CODE,
+  providerTag: string = 'llm',
+): AsyncIterable<T> {
+  const consumer = new AbortController()
+  const upstream = upstreamSignal === undefined
+    ? consumer.signal
+    : AbortSignal.any([upstreamSignal, consumer.signal])
+  const watchdog = idleWatchdog(upstream, timeoutMs, timeoutCode)
+  // 参数更少的函数可以赋值给参数更多的签名，所以历史单参调用点继续编译通过，
+  // 而需要区分「传输有数据」与「有可展示 chunk」的线路可以接住 activity。
+  const activity: StreamActivity = { pulse: () => { watchdog.pulse() } }
+  const iterator = source(watchdog.signal, activity)[Symbol.asyncIterator]()
+
+  let exhausted = false
+  try {
+    while (true) {
+      const result = await watchdog.next(iterator)
+      if (timeoutOf(watchdog.signal, timeoutCode) !== undefined) {
+        throw new LlmError(`${providerTag} stream idle timeout after ${timeoutMs}ms`, 'TIMEOUT')
+      }
+      if (result.done) {
+        exhausted = true
+        return
+      }
+      yield result.value
+    }
+  } catch (error) {
+    if (timeoutOf(watchdog.signal, timeoutCode) !== undefined) {
+      throw new LlmError(`${providerTag} stream idle timeout after ${timeoutMs}ms`, 'TIMEOUT', { cause: error })
+    }
+    if (upstreamSignal?.aborted) {
+      throw new LlmError(`${providerTag} request aborted by caller`, 'ABORTED', { cause: error })
+    }
+    throw error
+  } finally {
+    consumer.abort(`${providerTag} stream consumer stopped`)
+    if (!exhausted) {
+      // An abandoned demand can stay pending forever; awaiting the generator's
+      // queued return would re-hang the outcome that the deadline just settled.
+      void iterator.return?.(undefined).catch(() => {})
+    }
+    watchdog[Symbol.dispose]()
+  }
+}

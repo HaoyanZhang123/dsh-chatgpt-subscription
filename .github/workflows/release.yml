@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name to release (e.g. v0.13.2)'
+        required: false
+        default: ''
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+
+      - name: Parse version information
+        id: version_info
+        shell: bash
+        run: |
+          RAW_TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          VERSION="${RAW_TAG#v}"
+          echo "tag=$RAW_TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # 判断是否为预发布版本 (包含 -alpha, -beta, -rc 等)
+          if [[ "$VERSION" =~ -([a-zA-Z0-9]+) ]]; then
+            DIST_TAG="${BASH_REMATCH[1]}"
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            echo "dist_tag=$DIST_TAG" >> $GITHUB_OUTPUT
+            echo "::notice::Detected prerelease tag: $DIST_TAG"
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "dist_tag=latest" >> $GITHUB_OUTPUT
+            echo "::notice::Detected stable release: latest"
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run typecheck
+        run: npm run typecheck
+
+      - name: Clean & Build
+        run: |
+          rm -rf lib
+          npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Extract Release Notes from CHANGELOG.md
+        shell: node {0}
+        env:
+          RAW_TAG: ${{ steps.version_info.outputs.tag }}
+        run: |
+          const fs = require('fs');
+          const rawTag = process.env.RAW_TAG || '';
+          const version = rawTag.replace(/^v/, '');
+          let notes = '';
+
+          if (fs.existsSync('CHANGELOG.md')) {
+            const content = fs.readFileSync('CHANGELOG.md', 'utf8');
+            const escapedVer = version.replace(/\./g, '\\.');
+            const verRegex = new RegExp(`##\\s*\\[?v?${escapedVer}\\]?[^\\r\\n]*[\\r\\n]+([\\s\\S]*?)(?=\\r?\\n##\\s|$)`);
+            const match = content.match(verRegex);
+
+            if (match && match[1].trim()) {
+              notes = match[1].trim();
+            } else {
+              const unreleasedMatch = content.match(/##\\s*Unreleased[^\\r\\n]*[\\r\\n]+([\\s\\S]*?)(?=\\r?\\n##\\s|$)/i);
+              if (unreleasedMatch && unreleasedMatch[1].trim()) {
+                notes = unreleasedMatch[1].trim();
+              }
+            }
+          }
+
+          if (!notes) {
+            notes = `### Release ${rawTag}\n\nSee commit history for details.`;
+          }
+
+          fs.writeFileSync('RELEASE_NOTES.md', notes);
+          console.log(`Successfully extracted ${notes.length} characters of release notes.`);
+
+      - name: Package tarball
+        id: pack
+        shell: bash
+        run: |
+          # The lifecycle banner that breaks this is not only npm's own
+          # "> pkg@version prepack" line: the `prepack` script runs the build,
+          # and tsdown prints its whole progress log to stdout. So stdout carries
+          # build output followed by the tarball name, and writing that straight
+          # to $GITHUB_OUTPUT puts a line starting with ">" into the output file,
+          # which Actions rejects as a command-injection attempt.
+          #
+          # The tarball name is the LAST line of stdout and is the only one that
+          # ends in .tgz, so select it rather than the whole stream. printf is
+          # used instead of echo so the value is written literally.
+          npm pack > pack.log
+          TARBALL=$(grep -E '\.tgz$' pack.log | tail -n 1 | tr -d '\r')
+          if [ -z "$TARBALL" ]; then
+            echo "::error::could not find a .tgz filename in npm pack output"
+            cat pack.log
+            exit 1
+          fi
+          printf 'tarball=%s\n' "$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "Packaged: $TARBALL"
+
+      - name: Publish to npm
+        shell: bash
+        run: |
+          # A missing secret and an expired one both surface as a bare ENEEDAUTH,
+          # which reads like an npm outage and sends you looking in the wrong
+          # place. Check for it here and say exactly what to do.
+          #
+          # The token must be an *Automation* token: a Publish token requires an
+          # interactive 2FA OTP that no CI runner can answer, so npm rejects it
+          # the same way it rejects a missing one.
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error title=Missing NPM_TOKEN::This repository has no NPM_TOKEN secret, so npm publish cannot authenticate. Create an Automation token (npm token create --automation), then add it with: gh secret set NPM_TOKEN"
+            exit 1
+          fi
+
+          # Proves the credential can actually publish before the real attempt,
+          # so an expired or read-only token fails here with a clear message
+          # rather than as ENEEDAUTH twenty lines into the publish output.
+          npm whoami --registry https://registry.npmjs.org/
+
+          if [ "${{ steps.version_info.outputs.is_prerelease }}" = "true" ]; then
+            echo "Publishing prerelease to npm with tag ${{ steps.version_info.outputs.dist_tag }}..."
+            npm publish --access public --tag "${{ steps.version_info.outputs.dist_tag }}"
+          else
+            echo "Publishing stable release to npm..."
+            npm publish --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version_info.outputs.tag }}
+          name: ${{ steps.version_info.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          prerelease: ${{ steps.version_info.outputs.is_prerelease == 'true' }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.pack.outputs.tarball }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

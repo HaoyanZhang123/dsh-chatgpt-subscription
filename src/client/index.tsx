@@ -1,0 +1,616 @@
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { SessionId } from '@deepseek-ai/dsh-client-connection/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type {} from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-tool/client'
+import { ANTIGRAVITY_IMAGE_TOOL_NAME, CODEX_IMAGE_TOOL_NAME } from '../compat.ts'
+import { CodexComposerQuota } from './CodexComposerQuota.tsx'
+import { CodexImageToolView, type ImageLoader } from './CodexImageToolView.tsx'
+import { ProviderHubSection } from './ProviderHubSection.tsx'
+import { SubscriptionApi } from './api.ts'
+import { dictionaries, NS, type LocaleKey } from './locales.ts'
+import { installLineLocale } from './common/line-locale.ts'
+import { installHostLocaleMirror } from './common/host-locale-mirror.ts'
+import { installRussianLocale } from './locales-ru/index.ts'
+import { installStyles } from './styles.ts'
+import { installHubStyles } from './hub/hub-styles.ts'
+import { installModelChecklistStyles } from './common/model-checklist-styles.ts'
+import { installAntigravityStyles } from './antigravity/styles.ts'
+import { installPoolStyles } from './common/styles.ts'
+import { dictionaries as antigravityDicts, NS_ANTIGRAVITY, type AntigravityLocaleKey } from './antigravity/locales.ts'
+import { AntigravityComposerQuota } from './antigravity/AntigravityComposerQuota.tsx'
+import { ClaudeComposerQuota } from './claude/ClaudeComposerQuota.tsx'
+import { dictionaries as claudeDicts, NS_CLAUDE, type ClaudeLocaleKey } from './claude/locales.ts'
+import { installClaudeStyles } from './claude/styles.ts'
+import { CommandCodeComposerQuota } from './command-code/CommandCodeComposerQuota.tsx'
+import { dictionaries as commandCodeDicts, NS_COMMAND_CODE, type CommandCodeLocaleKey } from './command-code/locales.ts'
+import { KimiCodeComposerQuota } from './kimi-code/KimiCodeComposerQuota.tsx'
+import { dictionaries as kimiCodeDicts, NS_KIMI_CODE, type KimiCodeLocaleKey } from './kimi-code/locales.ts'
+import { installKimiCodeStyles } from './kimi-code/styles.ts'
+import { MinimaxCodeComposerQuota } from './minimax-code/MinimaxCodeComposerQuota.tsx'
+import { MinimaxVideoDocumentBody } from './minimax-code/MinimaxVideoDocumentBody.tsx'
+import { MinimaxVideoToolView } from './minimax-code/MinimaxVideoToolView.tsx'
+import { MINIMAX_VIDEO_PREVIEW_ID, minimaxVideoPreviewDefinition } from './minimax-code/document-preview.ts'
+import { dictionaries as minimaxCodeDicts, NS_MINIMAX_CODE, type MinimaxCodeLocaleKey } from './minimax-code/locales.ts'
+import { installMinimaxCodeStyles } from './minimax-code/styles.ts'
+import { MINIMAX_VIDEO_TOOL_NAME, type ReadVideoBytes, unwrapVideoBytes } from './minimax-code/video-contract.ts'
+import type { DocumentPreviewRegistryService, WorkspaceFilesRemote } from './minimax-code/video-slots.ts'
+import { GlmCodingPlanComposerQuota } from './glm-coding-plan/GlmCodingPlanComposerQuota.tsx'
+import { dictionaries as glmCodingPlanDicts, NS_GLM_CODING_PLAN, type GlmCodingPlanLocaleKey } from './glm-coding-plan/locales.ts'
+import { installGlmCodingPlanStyles } from './glm-coding-plan/styles.ts'
+import { dictionaries as ollamaDicts, NS_OLLAMA, type OllamaLocaleKey } from './ollama/locales.ts'
+import { StepCodeComposerQuota } from './step-code/StepCodeComposerQuota.tsx'
+import { dictionaries as stepCodeDicts, NS_STEP_CODE, type StepCodeLocaleKey } from './step-code/locales.ts'
+import { installStepCodeStyles } from './step-code/styles.ts'
+import { ClinePassComposerQuota } from './cline-pass/ClinePassComposerQuota.tsx'
+import { dictionaries as clinePassDicts, NS_CLINE_PASS, type ClinePassLocaleKey } from './cline-pass/locales.ts'
+import { installClinePassStyles } from './cline-pass/styles.ts'
+import { QoderComposerQuota } from './qoder/QoderComposerQuota.tsx'
+import { dictionaries as qoderDicts, NS_QODER, type QoderLocaleKey } from './qoder/locales.ts'
+import { installQoderStyles } from './qoder/styles.ts'
+import { OpenDesignComposerQuota } from './opendesign/OpenDesignComposerQuota.tsx'
+import { dictionaries as openDesignDicts, NS_OPENDESIGN, type OpenDesignLocaleKey } from './opendesign/locales.ts'
+import { installOpenDesignStyles } from './opendesign/styles.ts'
+import { setupMermaidObserver } from './mermaid/renderer.ts'
+import { createVideoCommandHost, installVideoCommand } from './minimax-code/video-command-host.tsx'
+import { installProgressUpdatesClient } from './progress-updates/index.ts'
+import { installProgressUpdatesStyles } from './progress-updates/styles.ts'
+import { dictionaries as progressUpdatesDicts, NS_PROGRESS_UPDATES, type ProgressUpdatesLocaleKey } from './progress-updates/locales.ts'
+import { WorkBuddyComposerQuota } from './workbuddy/WorkBuddyComposerQuota.tsx'
+import { dictionaries as workBuddyDicts, NS_WORKBUDDY, type WorkBuddyLocaleKey } from './workbuddy/locales.ts'
+import { installWorkBuddyStyles } from './workbuddy/styles.ts'
+import { installSubagentSettingsCard } from './subagent/index.ts'
+import { installSubagentStyles } from './subagent/styles.ts'
+import { dictionaries as subagentDicts, NS_SUBAGENT, type SubagentLocaleKey } from './subagent/locales.ts'
+import { MandateToolView } from './dispatch-ledger/MandateToolView.tsx'
+import { installDispatchLedgerStyles } from './dispatch-ledger/styles.ts'
+import { dictionaries as dispatchLedgerDicts, NS_DISPATCH_LEDGER, type DispatchLedgerLocaleKey } from './dispatch-ledger/locales.ts'
+import { CodeRunToolView } from './codemode/CodeRunToolView.tsx'
+import { installCodemodeStyles } from './codemode/styles.ts'
+import { CODE_RUN_TOOL_NAME } from './codemode/tool-name.ts'
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  /**
+   * Every namespace this plugin registers, typed by that line's own dictionary.
+   *
+   * These were `any`, which made a renamed or misspelled key invisible to the
+   * compiler: the card rendered the key name itself and only a human noticed.
+   * Each line exports its key union beside its dictionaries, so this map is now
+   * the compile-time half of the locale contract.
+   */
+  interface LocaleNamespaceMap {
+    'dsh-chatgpt-subscription': LocaleKey
+    'dsh-antigravity': AntigravityLocaleKey
+    'dsh-claude': ClaudeLocaleKey
+    'dsh-command-code': CommandCodeLocaleKey
+    'dsh-kimi-code': KimiCodeLocaleKey
+    'dsh-minimax-code': MinimaxCodeLocaleKey
+    'dsh-glm-coding-plan': GlmCodingPlanLocaleKey
+    'dsh-ollama': OllamaLocaleKey
+    'dsh-step-code': StepCodeLocaleKey
+    'dsh-cline-pass': ClinePassLocaleKey
+    'dsh-qoder': QoderLocaleKey
+    'dsh-opendesign': OpenDesignLocaleKey
+    'dsh-progress-updates': ProgressUpdatesLocaleKey
+    'dsh-workbuddy': WorkBuddyLocaleKey
+    'dsh-subagent-settings': SubagentLocaleKey
+    'dsh-dispatch-ledger': DispatchLedgerLocaleKey
+  }
+}
+
+export const inject = [
+  'slots',
+  'locale',
+  'modelDirectories',
+  'conversation',
+  'sessions',
+  'remote',
+  'remote.session',
+]
+
+export function apply(ctx: ClientContext): void {
+  // The provider cards resolve their copy through this runtime instead of their
+  // own dictionary object, so their text follows the active locale.
+  installLineLocale(ctx.locale)
+// The Host composes provider names and its own errors without any locale of its
+// own; this is the one seam that tells it which language the page is in.
+ctx.effect(() => installHostLocaleMirror(ctx.locale), 'dsh-chatgpt-subscription: host locale mirror')
+  // Russian is a language pack, not a third column of the shipped dictionaries:
+  // it registers itself as a selectable language and one dictionary per namespace.
+  installRussianLocale(ctx)
+  ctx.effect(() => ctx.locale.register(NS, dictionaries), 'dsh-chatgpt-subscription: dictionaries')
+  ctx.effect(() => installStyles(), 'dsh-chatgpt-subscription: styles')
+  ctx.effect(() => {
+    installHubStyles()
+    installModelChecklistStyles()
+    return () => {}
+  }, 'dsh-chatgpt-subscription: hub styles')
+  ctx.effect(() => ctx.locale.register(NS_ANTIGRAVITY, antigravityDicts), 'dsh-antigravity: dictionaries')
+  ctx.effect(() => {
+    installAntigravityStyles()
+    return () => {}
+  }, 'dsh-antigravity: styles')
+  ctx.effect(() => ctx.locale.register(NS_CLAUDE, claudeDicts), 'dsh-claude: dictionaries')
+  ctx.effect(() => {
+    installClaudeStyles()
+    return () => {}
+  }, 'dsh-claude: styles')
+  ctx.effect(() => ctx.locale.register(NS_COMMAND_CODE, commandCodeDicts), 'dsh-command-code: dictionaries')
+  ctx.effect(() => ctx.locale.register(NS_KIMI_CODE, kimiCodeDicts), 'dsh-kimi-code: dictionaries')
+  ctx.effect(() => {
+    installKimiCodeStyles()
+    return () => {}
+  }, 'dsh-kimi-code: styles')
+  ctx.effect(() => ctx.locale.register(NS_MINIMAX_CODE, minimaxCodeDicts), 'dsh-minimax-code: dictionaries')
+  ctx.effect(() => {
+    installMinimaxCodeStyles()
+    return () => {}
+  }, 'dsh-minimax-code: styles')
+  ctx.effect(() => ctx.locale.register(NS_GLM_CODING_PLAN, glmCodingPlanDicts), 'dsh-glm-coding-plan: dictionaries')
+  ctx.effect(() => {
+    installGlmCodingPlanStyles()
+    return () => {}
+  }, 'dsh-glm-coding-plan: styles')
+  ctx.effect(() => ctx.locale.register(NS_OLLAMA, ollamaDicts), 'dsh-ollama: dictionaries')
+  ctx.effect(() => ctx.locale.register(NS_PROGRESS_UPDATES, progressUpdatesDicts), 'dsh-progress-updates: dictionaries')
+  ctx.effect(() => {
+    installProgressUpdatesStyles()
+    return () => {}
+  }, 'dsh-progress-updates: styles')
+  ctx.effect(() => ctx.locale.register(NS_STEP_CODE, stepCodeDicts), 'dsh-step-code: dictionaries')
+  ctx.effect(() => {
+    installStepCodeStyles()
+    return () => {}
+  }, 'dsh-step-code: styles')
+  ctx.effect(() => ctx.locale.register(NS_CLINE_PASS, clinePassDicts), 'dsh-cline-pass: dictionaries')
+  ctx.effect(() => {
+    installClinePassStyles()
+    return () => {}
+  }, 'dsh-cline-pass: styles')
+  ctx.effect(() => ctx.locale.register(NS_QODER, qoderDicts), 'dsh-qoder: dictionaries')
+  ctx.effect(() => {
+    installQoderStyles()
+    return () => {}
+  }, 'dsh-qoder: styles')
+  ctx.effect(() => ctx.locale.register(NS_OPENDESIGN, openDesignDicts), 'dsh-opendesign: dictionaries')
+  ctx.effect(() => {
+    installOpenDesignStyles()
+    return () => {}
+  }, 'dsh-opendesign: styles')
+  ctx.effect(() => ctx.locale.register(NS_WORKBUDDY, workBuddyDicts), 'dsh-workbuddy: dictionaries')
+  ctx.effect(() => {
+    installWorkBuddyStyles()
+    return () => {}
+  }, 'dsh-workbuddy: styles')
+  // 「子智能体」设置卡：遮蔽宿主同名卡（同 id、priority -10），并在宿主的授权清单
+  // 之外再记一份「全局默认 + 按主代理模型」的两级列表。样式表无条件安装，
+  // 注册本身在 installSubagentSettingsCard 里按服务是否就绪决定。
+  ctx.effect(() => ctx.locale.register(NS_SUBAGENT, subagentDicts), 'dsh-subagent-settings: dictionaries')
+  ctx.effect(() => ctx.locale.register(NS_DISPATCH_LEDGER, dispatchLedgerDicts), 'dsh-dispatch-ledger: dictionaries')
+  ctx.effect(() => {
+    installSubagentStyles()
+    return () => {}
+  }, 'dsh-subagent-settings: styles')
+  // Badge variants the shared account-pool card adds on top of each provider's
+  // own stylesheet; additive, so it never restyles an existing tab.
+  ctx.effect(() => {
+    installPoolStyles()
+    installCodemodeStyles()
+  installDispatchLedgerStyles()
+    return () => {}
+  }, 'dsh-chatgpt-subscription: pool styles')
+  ctx.effect(() => setupMermaidObserver(), 'dsh-mermaid: observer')
+
+  const t = ctx.locale.bind(NS)
+
+  const handleModelDirectoryReload = () => {
+    try {
+      const conv = ctx.conversation as unknown as { activeSessionId?: string; currentSessionId?: string; activeId?: string }
+      const activeSessionId = conv?.activeSessionId || conv?.currentSessionId || conv?.activeId
+      if (activeSessionId && ctx.modelDirectories) {
+        const dir = ctx.modelDirectories.directoryFor(activeSessionId as any)
+        void dir?.load?.().catch?.(() => undefined)
+      }
+    } catch {
+      // best-effort
+    }
+  }
+
+  // One sidebar entry hosts every subscription provider behind tabs instead
+  // of registering a separate settings page per provider.
+  const ProviderHubSectionWrapper: React.FC<React.ComponentProps<typeof ProviderHubSection>> = (props) => {
+    // The hub reuses the refresh callback contract so a model toggle in any
+    // provider tab repaints the conversation model picker.
+    return <ProviderHubSection {...props} onModelChange={handleModelDirectoryReload} />
+  }
+
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'subscription-hub',
+    order: 45,
+    label: () => t('hubTitle'),
+    locale: NS,
+  }, ProviderHubSectionWrapper))
+
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right', id: 'codex-subscription-quota', order: 35, locale: NS,
+    inject: (sessionId) => composerBadgeInject(ctx, sessionId, { withApi: true }),
+  }, CodexComposerQuota))
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right', id: 'antigravity-quota', order: 36, locale: NS_ANTIGRAVITY,
+    inject: (sessionId) => composerBadgeInject(ctx, sessionId),
+  }, AntigravityComposerQuota))
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right', id: 'command-code-quota', order: 37, locale: NS_COMMAND_CODE,
+    inject: (sessionId) => composerBadgeInject(ctx, sessionId),
+  }, CommandCodeComposerQuota))
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right', id: 'kimi-code-quota', order: 38, locale: NS_KIMI_CODE,
+    inject: (sessionId) => composerBadgeInject(ctx, sessionId),
+  }, KimiCodeComposerQuota))
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right', id: 'minimax-code-quota', order: 40, locale: NS_MINIMAX_CODE,
+    inject: (sessionId) => composerBadgeInject(ctx, sessionId),
+  }, MinimaxCodeComposerQuota))
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right', id: 'claude-quota', order: 41, locale: NS_CLAUDE,
+    inject: (sessionId) => composerBadgeInject(ctx, sessionId),
+  }, ClaudeComposerQuota))
+  // 顺序 42：接在 claude-quota(41) 之后顺延，而不是插进既有号之间。
+  // 这串 order 只要求互不撞号且保持递增；给新线路重排既有线路的号，会让一条已经
+  // 上线的线路的槽位位置无谓地变一次，顺延则旧号全部不动。
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right', id: 'glm-coding-plan-quota', order: 42, locale: NS_GLM_CODING_PLAN,
+    inject: (sessionId) => composerBadgeInject(ctx, sessionId),
+  }, GlmCodingPlanComposerQuota))
+  // 顺序 43：接在 glm-coding-plan-quota(42) 之后顺延，理由与 42 那条注释相同——
+  // 既有槽位一个 order 都不动，新线路只往后拿号。
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right', id: 'step-code-quota', order: 43, locale: NS_STEP_CODE,
+    inject: (sessionId) => composerBadgeInject(ctx, sessionId),
+  }, StepCodeComposerQuota))
+  // 顺序 44：同样接在既有线路之后顺延，不动 35–43 任何一格。
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right', id: 'cline-pass-quota', order: 44, locale: NS_CLINE_PASS,
+    inject: (sessionId) => composerBadgeInject(ctx, sessionId),
+  }, ClinePassComposerQuota))
+  // 顺序 45：接在 cline-pass-quota(44) 之后顺延，理由同上——既有槽位一个 order 都不动。
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right', id: 'qoder-quota', order: 45, locale: NS_QODER,
+    inject: (sessionId) => composerBadgeInject(ctx, sessionId),
+  }, QoderComposerQuota))
+  // 顺序 46：接在 qoder-quota(45) 之后顺延，理由同上——既有槽位一个 order 都不动。
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right', id: 'opendesign-quota', order: 46, locale: NS_OPENDESIGN,
+    inject: (sessionId) => composerBadgeInject(ctx, sessionId),
+  }, OpenDesignComposerQuota))
+  // 顺序 47：WorkBuddy 只取新末尾，历史 39 空位不复用。
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right', id: 'workbuddy-quota', order: 47, locale: NS_WORKBUDDY,
+    inject: (sessionId) => composerBadgeInject(ctx, sessionId),
+  }, WorkBuddyComposerQuota))
+  ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({
+    name: 'tool.call.toolview',
+    key: CODEX_IMAGE_TOOL_NAME,
+    locale: NS,
+    inject: (sessionId) => ({
+      loadImage: imageLoader(ctx, sessionId),
+    }),
+  }, CodexImageToolView))
+  // Antigravity 生图工具的结果与 Codex 生图同形（prompt 参数 + 图片块），复用同一张卡片。
+  ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({
+    name: 'tool.call.toolview',
+    key: ANTIGRAVITY_IMAGE_TOOL_NAME,
+    locale: NS,
+    inject: (sessionId) => ({
+      loadImage: imageLoader(ctx, sessionId),
+    }),
+  }, CodexImageToolView))
+  // MiniMax 生成视频：与上面两张生图卡片同一种解剖结构，只是媒体区换成 16:9 视频台。
+  // 视频读不出来时卡片照常显示，只有视频台退回虚线占位——所以这里即使取字节日志
+  // 通道缺席也不影响注册。
+  ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({
+    name: 'tool.call.toolview',
+    key: MINIMAX_VIDEO_TOOL_NAME,
+    locale: NS_MINIMAX_CODE,
+    inject: (sessionId) => ({
+      sessionId,
+      readVideo: videoBytesLoader(ctx),
+    }),
+  }, MinimaxVideoToolView))
+  // Code Mode `code_run`：与宿主内置 `run_code` 对齐的折叠行 + 语法高亮源码卡片 + 独立输出区。
+  ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({
+    name: 'tool.call.toolview',
+    key: CODE_RUN_TOOL_NAME,
+    locale: NS,
+  }, CodeRunToolView))
+  // 派发卡片：按工具名占用 `tool.call.toolview`（占用即替换整行），把 mandate 头
+  // 拆成结构、把结果与 MANDATE_* 拒绝码单独留在醒目位置。只影响这两个工具名。
+  //
+  // `priority: -10` 不是可选装饰：宿主自己的 `details-toolview` 已经用**默认**
+  // priority 0 占了 `subagent` 与 `subagent_fork`。keyed 槽位一个 key 在一个
+  // priority 上只允许一条，同优先级再注册会抛错；而这个错发生在 `apply()` 里，
+  // Cordis 会判定整个客户端插件启动失败并**回滚它的全部注册**——设置枢纽、额度
+  // 胶囊、工具卡片会一起消失。keyed 槽位里最低优先级的那条渲染，所以降到 -10
+  // 才是"遮蔽宿主那张 details 行"，用同 id + `priority: -10` 遮蔽宿主设置卡
+  // 是同一个道理（见 ./subagent/index.ts）。
+  for (const key of ['subagent', 'subagent_fork'] as const) {
+    ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({
+      name: 'tool.call.toolview',
+      key,
+      priority: -10,
+      locale: NS_DISPATCH_LEDGER,
+    }, MandateToolView))
+  }
+
+  // MiniMax 视频的侧边栏渲染器：两段注册（定义 + keyed 正文），id 是同一个字符串。
+  // 形状照抄宿主 ui-sidebar-documentpreview 的 image/index.ts。
+  installVideoDocumentPreview(ctx)
+
+  // 「子智能体」设置卡：注册进插件页的 `plugins.item`，只在宿主服务这两个命名空间
+  // 时出现。服务缺席时整段是空操作，绝不会让 apply() 抛错。
+  installSubagentSettingsCard(ctx)
+
+  // 「进展更新」客户端半边：对话流进展行、侧栏面板、以及它自己的设置分区。
+  // 单独一个子模块（./progress-updates/），与 kimi-code 这些线路同一种
+  // 组织方式：入口只负责调用，注册细节留在子模块里。
+  installProgressUpdatesClient(ctx)
+
+  // MiniMax 视频的第二个用户入口：`/video` 斜杠命令 + 参数弹窗。
+  //
+  // 视频工具是模型自主调用的，用户唯一的入口是自然语言，于是他既不知道有哪些参数，
+  // 也无从知道那些参数会怎么被联动规则改写。命令给出参数，弹窗给出表单，提交只把
+  // 参数**填进输入框**——用户看一眼再发送（详见 ./minimax-code/video-command.ts）。
+  //
+  // 两段分开注册，理由与「进展更新」那段相同：命令挂在宿主的 commandUi 上，弹窗
+  // 容器挂在 conversation.input.overlay 上，任何一段缺席都只该少一个功能，而不是
+  // 让整个插件 apply 失败。
+  ctx.effect(() => installVideoCommand(ctx), 'dsh-minimax-code: /video command')
+  const VideoCommandHost = createVideoCommandHost(ctx)
+  ctx.slots.inject('conversation.input.overlay', () => {
+    try {
+      return ctx.slots.register({
+        name: 'conversation.input.overlay',
+        id: 'minimax-video-form',
+        order: 3,
+        locale: NS_MINIMAX_CODE,
+      }, VideoCommandHost)
+    } catch {
+      return () => {}
+    }
+  })
+}
+
+type ImageUrlResolver = (sessionId: string, attachment: ImageAttachmentRef) => Promise<string>
+
+/**
+ * The seats every composer badge is handed.
+ *
+ * Seven registrations each repeated this eight-line factory verbatim, and the
+ * only difference between them was whether ChatGPT's own badge also reads the
+ * subscription API directly. It lives here so a badge added later cannot forget
+ * the directory seat (the badge resolves the session's model list through it) or
+ * the reload callback that keeps that list fresh.
+ *
+ * The session id arrives as a plain string while the directory service takes the
+ * branded one, so the cast lives here rather than at seven call sites.
+ */
+function composerBadgeInject(ctx: ClientContext, sessionId: string, options: { withApi?: boolean } = {}) {
+  const directory = ctx.modelDirectories.directoryFor(sessionId as SessionId)
+  return {
+    ...(options.withApi === true ? { api: new SubscriptionApi() } : {}),
+    directory: directory.store,
+    loadModelDirectory: () => {
+      void directory.load().catch(() => undefined)
+    },
+  }
+}
+
+/**
+ * Why the seven registrations below are spelled out rather than driven from a
+ * table.
+ *
+ * `ctx.slots.register` is generic over the slot key *and* the locale namespace,
+ * and it is overloaded; the component's props are composed from both. A table
+ * would have to hold components of different namespaces, so the correlation
+ * between a row's `locale` and its `component` would be erased — and a helper
+ * that keeps the correlation generically fails overload resolution inside its
+ * own body, because the namespace parameter is still unresolved there. Both
+ * roads end in a cast against the harness's composed-props internals, which is a
+ * version-sensitive seam this plugin does not add. What each row repeats is only
+ * the registration object; the eight-line seat factory is
+ * {@link composerBadgeInject}.
+ */
+
+/**
+ * Resolve one session-authorized image URL.
+ *
+ * Harness 0.1.2 moved this from `resolveImage` on `conversation` to `imageUrl`
+ * on `uiConversation`, so both shapes stay supported.
+ */
+function imageLoader(ctx: ClientContext, sessionId: string): ImageLoader {
+  const current = ctx.get('uiConversation') as unknown as { imageUrl?: ImageUrlResolver } | undefined
+  const currentResolve = current?.imageUrl?.bind(current)
+  if (currentResolve !== undefined) return (attachment) => currentResolve(sessionId, attachment)
+  const legacy = ctx.get('conversation') as unknown as { resolveImage?: ImageUrlResolver } | undefined
+  const legacyResolve = legacy?.resolveImage?.bind(legacy)
+  if (legacyResolve !== undefined) return (attachment) => legacyResolve(sessionId, attachment)
+  return () => Promise.reject(new Error('no client service resolves an image URL'))
+}
+
+/**
+ * 从上下文里读一个**可选**的浏览器服务，读不到就当作没有。
+ *
+ * 只有 `get` 是 Cordis 的基础成员；没写进 `inject` 的服务名直接当属性读会抛错。
+ * 而本文件要读的这几个（`remote` 的命名空间、宿主的 `documentPreviews`）都属于
+ * 「装了才有」：文档预览插件不是本插件的依赖。
+ *
+ * 与 `./progress-updates/index.ts` 的 `serviceOf` 同形——那边这么写是因为
+ * `sidebarRight*` 可选，这边同理。测试里的上下文替身没有 `get`，所以取值本身
+ * 也必须包在 try 里，而不是只包 `ctx.get` 的调用。
+ *
+ * @param ctx - 浏览器根上下文。
+ * @param name - 服务名。
+ * @returns 服务实例，或 undefined。
+ */
+function optionalService(ctx: ClientContext, name: string): unknown {
+  try {
+    return (ctx as unknown as { get?: (service: string) => unknown }).get?.(name)
+  } catch {
+    // 上下文拒绝查询（服务不存在或已卸载）：按缺失处理。
+    return undefined
+  }
+}
+
+/**
+ * 从上下文里解析 `remote.workspaceFiles` 命名空间。
+ *
+ * 在真实宿主中，`remote.workspaceFiles` 是 `ClientRemoteService` 通过
+ * `new RemoteNamespaceService(ctx, 'workspaceFiles')` 注册的独立 Cordis 服务
+ * （服务名 `'remote.workspaceFiles'`）。由于本插件的静态 `inject` 只声明了
+ * `'remote'` 与 `'remote.session'`，直接读 `ctx.remote.workspaceFiles` 属性会触发
+ * Cordis 的属性守卫并抛出 `cannot get property "remote.workspaceFiles" without inject`。
+ * 因此这里优先走 `optionalService(ctx, 'remote.workspaceFiles')`（即 `ctx.get`），
+ * 仅在测试替身把 `workspaceFiles` 挂成普通对象属性时才在 `try/catch` 内回退读取。
+ */
+function resolveWorkspaceFiles(ctx: ClientContext): WorkspaceFilesRemote['workspaceFiles'] | undefined {
+  const direct = optionalService(ctx, 'remote.workspaceFiles') as WorkspaceFilesRemote['workspaceFiles'] | undefined
+  if (typeof direct?.readBytes === 'function') return direct
+  try {
+    const remote = optionalService(ctx, 'remote') as WorkspaceFilesRemote | undefined
+    const nested = remote?.workspaceFiles
+    if (typeof nested?.readBytes === 'function') return nested
+  } catch {
+    // Cordis 拒绝未声明 inject 的 `remote.workspaceFiles` 属性读：按缺失处理。
+  }
+  return undefined
+}
+
+/**
+ * 取视频字节：把 `ctx.remote.workspaceFiles` 的整文件读取收成一条窄通道。
+ *
+ * 视频在浏览器里**没有别的取字节方式**：`loadImage` 是附件专用的，`<video src>`
+ * 也读不到工作区。宿主侧边栏的图像预览走的正是这条远端
+ * （`ui-sidebar-documentpreview/src/client/rpc.ts` 的 `ReadDocumentBytes`），
+ * 这里照抄同一调用：整文件读取，上限由宿主 `maxFileBytes` 决定。
+ *
+ * ## 结果要先看 `ok`
+ *
+ * 远端调用**不抛异常**：宿主把它声明的失败装进结果里，成功是
+ * `{ ok: true, value }`，失败是 `{ ok: false, error }`（见
+ * `@deepseek-ai/dsh-typert-protocol` 的 `RemoteResult`）。所以字节在
+ * `value.data`，直接读 `(await call()).data` 拿到的是 `undefined`——
+ * 界面会把它当成「还在读」，于是视频永远停在「正在读取视频」。
+ * 失败那一支要**抛出去**：卡片按 `code` 与 `details.limit` 区分
+ * 「文件太大」和「读不到」，那需要一条真正的异常。
+ *
+ * ## 两代宿主，两种取法
+ *
+ * ≥0.1.7 的宿主把整文件读取放在 `readBytes` 的 `options` 形态上；
+ * ≤0.1.6 的宿主把它叫 `readAll`，而那一代的 `readBytes` 收的是**字节窗口**
+ * （拿它读整文件只会读到 `maxBytes` 那么多）。两者都试，载荷形状的差别由
+ * {@link unwrapVideoBytes} 收口。
+ *
+ * 远端是**可选的**且按需解析：不在 `apply(ctx)` 瞬间把服务抓死，以免
+ * `remote.workspaceFiles` 晚于本插件挂载时读到空值；取不到就拒绝这次读取——
+ * 两个界面都会把它显示成占位块，而不是崩掉。
+ *
+ * @param ctx - 浏览器根上下文。
+ * @returns 与 `readBytes` 同形的取字节通道。
+ */
+function videoBytesLoader(ctx: ClientContext): ReadVideoBytes {
+  return async (sessionId, path, signal) => {
+    const workspaceFiles = resolveWorkspaceFiles(ctx)
+    if (workspaceFiles === undefined) {
+      throw new Error('no remote workspaceFiles reader is mounted')
+    }
+    // ≤0.1.6 那一代把整文件读取放在 readAll 上；≥0.1.7 把它并进了
+    // readBytes 的 options 形态。旧世代的 readBytes 收的是**字节窗口**，
+    // 拿它读整文件只会读到 maxBytes 那么多，所以那一代走 readAll。
+    if (typeof workspaceFiles.readAll === 'function') {
+      const readAll = workspaceFiles.readAll.bind(workspaceFiles)
+      return unwrapVideoBytes(await readAll(sessionId, path, signal))
+    }
+    if (typeof workspaceFiles.readBytes !== 'function') {
+      throw new Error('no remote workspaceFiles reader is mounted')
+    }
+    const readBytes = workspaceFiles.readBytes.bind(workspaceFiles)
+    return unwrapVideoBytes(await readBytes(sessionId, path, {}, signal))
+  }
+}
+
+/**
+ * 从上下文里取 `documentPreviews` 注册表。
+ *
+ * 先试属性读（供 `ctx.inject(['documentPreviews'], scope => …)` 的子 scope 与测试
+ * 替身使用），被 Cordis 拒绝时退回 `optionalService`（`ctx.get`）。
+ */
+function documentPreviewsOf(scope: ClientContext): DocumentPreviewRegistryService | undefined {
+  try {
+    const direct = (scope as unknown as { documentPreviews?: DocumentPreviewRegistryService }).documentPreviews
+    if (direct !== undefined) return direct
+  } catch {
+    // Cordis 拒绝未声明 inject 的属性读：退回 optionalService。
+  }
+  return optionalService(scope, 'documentPreviews') as DocumentPreviewRegistryService | undefined
+}
+
+/**
+ * 挂载 MiniMax 视频的侧边栏渲染器。
+ *
+ * 两个注册各管一半，形状逐字照抄宿主
+ * `ui-sidebar-documentpreview/src/client/image/index.ts`：
+ *
+ * 1. `documentPreviews.register` 声明「mp4/webm/mov/m4v 归我」，`priority: 'extension'`
+ *    让外部实现排在内置实现之前（`document/registry.ts` 的排序规则）；
+ * 2. `sidebar.right.tab.document` 的 keyed 槽用**同一个 id** 注册正文。
+ *
+ * 两段都包在 `ctx.effect` 里，返回注册器给的幂等卸载函数：插件行被禁用时定义与
+ * 正文一起消失，不会留下一个注册了却渲染不出的实现。
+ *
+ * `documentPreviews` 是宿主文档预览插件通过 `ctx.reflect.provide` 给的服务，它的
+ * `inject` 比本插件多 `sidebarRightTabs` / `remote.workspaceFiles` / `resources`，
+ * 因此在浏览器启动时通常晚于本插件激活。若它在 `apply(ctx)` 瞬间尚未上线，则通过
+ * `ctx.inject(['documentPreviews'], …)` 在它上线时自动补注册。
+ *
+ * @param ctx - 浏览器根上下文。
+ */
+function installVideoDocumentPreview(ctx: ClientContext): void {
+  const registerPreview = (scope: ClientContext): (() => void) => {
+    const registry = documentPreviewsOf(scope)
+    if (typeof registry?.register !== 'function') return () => {}
+    try {
+      const t = ctx.locale.bind(NS_MINIMAX_CODE)
+      return registry.register(minimaxVideoPreviewDefinition(() => t('videoTitle')))
+    } catch {
+      return () => {}
+    }
+  }
+  const immediate = documentPreviewsOf(ctx)
+  const injectService = (ctx as unknown as {
+    inject?: (deps: readonly string[], callback: (scope: ClientContext) => void) => void
+  }).inject
+  if (typeof immediate?.register === 'function' || typeof injectService !== 'function') {
+    if (typeof immediate?.register === 'function') {
+      ctx.effect(() => registerPreview(ctx), 'dsh-minimax-code: video preview definition')
+    }
+  } else {
+    injectService.call(ctx, ['documentPreviews'], (scope) => {
+      scope.effect(() => registerPreview(scope), 'dsh-minimax-code: video preview definition')
+    })
+  }
+  // 正文不注入取字节通道：定义的 `loading: 'bytes-complete'` 已经让宿主把整段
+  // 文件读好，再通过 keyed 槽的 `content` 交下来（内置的图像渲染器同一条路）。
+  // 自己再读一遍等于把同一段字节在 RPC 上传两次。
+  ctx.slots.inject('sidebar.right.tab.document', () => ctx.slots.register({
+    name: 'sidebar.right.tab.document',
+    key: MINIMAX_VIDEO_PREVIEW_ID,
+    locale: NS_MINIMAX_CODE,
+  }, MinimaxVideoDocumentBody))
+}
+

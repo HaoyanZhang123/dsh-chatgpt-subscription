@@ -1,0 +1,33 @@
+# Dependencies and build caches
+node_modules/
+coverage/
+.npm-cache/
+*.tsbuildinfo
+
+# Generated package output (bundles, declarations, source maps). Rebuilt by
+# `npm run build`, and by the publish flow's prepack hook. CI builds before it
+# tests so the bundle tests run against fresh output rather than a committed copy.
+lib/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Logs and package archives
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tgz
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor scratch copies (e.g. .tmp-index-current.ts) are not part of the tree.
+.tmp-*

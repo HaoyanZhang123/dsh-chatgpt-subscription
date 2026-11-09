@@ -1,0 +1,845 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import type {
+  KimiCodeLoginFlowStatus,
+  KimiCodeModelOption,
+  KimiCodeReasoningEffort,
+  KimiCodeWebStatus,
+} from '../../shared/kimi-code-contracts.ts'
+import type { SubscriptionPreferencesDto } from '../../shared/contracts.ts'
+import { AccountPoolSection } from '../common/AccountPoolSection.tsx'
+import { ContextWindowEditor, contextDraftsFor } from '../common/ContextWindowEditor.tsx'
+import { ModelChecklist } from '../common/ModelChecklist.tsx'
+import { createLineApi } from '../common/line-api.ts'
+import { SubscriptionApi } from '../api.ts'
+import { CompactionRouteCard } from '../CompactionRouteCard.tsx'
+import { createQuotaFollowUp, type QuotaFollowUp } from '../common/quota-follow-up.ts'
+import { formatCapacity, formatDate, parsePositiveCapacity } from '../common/format.ts'
+import type { AccountRotationStrategy } from '../../shared/account-pool-contracts.ts'
+import { zh, NS_KIMI_CODE } from './locales.ts'
+import { effortLabel, effortOptions, thinkingOnlyModels, wireLabel } from './labels.ts'
+import { KimiModelCapabilities } from './KimiModelCapabilities.tsx'
+import { KimiQuotaCard } from './KimiQuotaCard.tsx'
+import { useLineDict } from '../common/line-locale.ts'
+
+const API = '/kimi-code/api'
+const api = createLineApi(API, 'Kimi Code')
+
+interface Props {
+  onModelChange?: () => void
+  loadModelDirectory?: () => void
+}
+
+/**
+ * One token count as the card prints it.
+ *
+ * A reported zero prints as "0": zero writes is a reading, while a blank cell
+ * reads as "nothing was measured", and the two are different claims. Only a
+ * number this build cannot read at all falls back to "暂无".
+ */
+function tokenCount(value: number | undefined, t: typeof zh): string {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : t.unknownMetric
+}
+
+/**
+ * One byte count as the card prints it.
+ *
+ * The image budget is a byte budget, so a raw number would be unreadable: the
+ * cap sits in the megabytes while a single image can be in the kilobytes.
+ * A value the card cannot read prints as "0 B" rather than "NaN B" — an
+ * absent measurement is not a measurement of zero bytes.
+ */
+function formatByteSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(bytes % (1024 * 1024) === 0 ? 0 : 2)} MB`
+  }
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${Math.round(bytes)} B`
+}
+
+/** Human label for the last request's prefix-drift cause. */
+function driftLabel(
+  cause: NonNullable<NonNullable<KimiCodeWebStatus['cache']>['lastDrift']>,
+  t: typeof zh,
+): string {
+  switch (cause) {
+    case 'first-request': return t.cacheDriftFirst
+    case 'stable': return t.cacheDriftStable
+    case 'system-prompt': return t.cacheDriftSystemPrompt
+    case 'tools': return t.cacheDriftTools
+    case 'cache-key': return t.cacheDriftCacheKey
+    case 'cold-key': return t.cacheDriftColdKey
+    case 'image-offload': return t.cacheDriftImageOffload
+    default: return String(cause)
+  }
+}
+
+export function KimiCodeSection({ onModelChange, loadModelDirectory }: Props): React.ReactElement {
+  const [status, setStatus] = useState<KimiCodeWebStatus | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [flow, setFlow] = useState<KimiCodeLoginFlowStatus | null>(null)
+  const [contextDrafts, setContextDrafts] = useState<Record<string, string>>({})
+  const [savingModel, setSavingModel] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  // Result of an explicit connection test. The button used to end silently on
+  // success, which is indistinguishable from a click that never registered.
+  const [connectionNotice, setConnectionNotice] = useState<string | null>(null)
+  // The compaction card below reads this plugin's own preferences rather than
+  // this line's status: the route is a plugin-level setting, scoped by the host
+  // to kimi-code sessions.
+  const [subscriptionApi] = useState(() => new SubscriptionApi())
+  const [compactionPreferences, setCompactionPreferences] = useState<SubscriptionPreferencesDto | null>(null)
+
+  /** Follow-up poll owed while the host refreshes the quota behind an answer. */
+  const quotaFollowUp = useRef<QuotaFollowUp | null>(null)
+
+  /**
+   * Which status answer may still be applied.
+   *
+   * A read goes out on a timer, on tab focus and after a quota refresh, and its
+   * answer can land AFTER the answer to a switch the user made in between.
+   * Applying that older document put the previous account back on screen, which
+   * reads as the pool having switched on its own. So every explicit action
+   * retires whatever read is still in flight, and a read applies its answer only
+   * while it is still the newest one.
+   */
+  const statusGeneration = useRef(0)
+
+  /** Show the answer to an explicit action, and retire any read it outdated. */
+  const applyStatus = useCallback((next: KimiCodeWebStatus) => {
+    statusGeneration.current += 1
+    setStatus(next)
+  }, [])
+
+  const t = useLineDict(NS_KIMI_CODE, zh)
+
+  const notifyChange = useCallback(() => {
+    onModelChange?.()
+    loadModelDirectory?.()
+  }, [onModelChange, loadModelDirectory])
+
+  const loadStatus = useCallback(async (quiet = false) => {
+    const generation = ++statusGeneration.current
+    if (!quiet) setError(null)
+    try {
+      const data = await api.request<KimiCodeWebStatus>('/status')
+      // Stale: an action was answered while this read was in flight, so this
+      // document predates what the card already shows.
+      if (generation !== statusGeneration.current) return
+      setStatus(data)
+      setContextDrafts(contextDraftsFor(data))
+      // An answer that refreshed the quota behind itself is followed up shortly,
+      // so the fresh numbers land without waiting for the next poll.
+      quotaFollowUp.current ??= createQuotaFollowUp()
+      quotaFollowUp.current.observe(data.quotaRefreshing === true, () => { void loadStatus(true) })
+    } catch (err) {
+      if (!quiet && generation === statusGeneration.current) {
+        setError(err instanceof Error ? err.message : String(err))
+      }
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  // Read the saved compaction route once, on mount. A status this build cannot
+  // read leaves the card at "follows the conversation model" instead of failing
+  // the whole tab, which is how the card fails elsewhere too.
+  useEffect(() => {
+    let live = true
+    void subscriptionApi.status()
+      .then((answer) => {
+        const preferences = answer?.preferences
+        if (live && preferences !== undefined && preferences !== null) setCompactionPreferences(preferences)
+      })
+      .catch(() => undefined)
+    return () => { live = false }
+  }, [subscriptionApi])
+
+  useEffect(() => {
+    void loadStatus()
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void loadStatus(true)
+    }
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    const timer = window.setInterval(refreshWhenVisible, 60_000)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+      quotaFollowUp.current?.cancel()
+    }
+  }, [loadStatus])
+
+  // The login flow runs on the host and is polled here, because authorization
+  // happens in a browser the card does not control.
+  useEffect(() => {
+    if (flow?.status !== 'pending') return
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const poll = await api.request<KimiCodeLoginFlowStatus>('/login/status')
+          setFlow(poll)
+          if (poll.status === 'complete') {
+            await loadStatus()
+            notifyChange()
+          } else if (poll.status === 'error') {
+            setError(poll.error || t.loginFailed)
+          }
+        } catch {
+          // A failed poll is transient; the next tick retries.
+        }
+      })()
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [flow?.status, loadStatus, notifyChange, t.loginFailed])
+
+  /** Start a sign-in; a re-authorization names the row it must sign back in as. */
+  const handleLogin = async (accountId?: string) => {
+    try {
+      setBusy('login')
+      setError(null)
+      setCopied(false)
+      const next = await api.request<KimiCodeLoginFlowStatus>('/login', {
+        method: 'POST',
+        body: JSON.stringify(accountId === undefined ? {} : { accountId }),
+      })
+      setFlow(next)
+      // The host already opened the browser; a failed launch is recoverable
+      // because the card always renders the URL and the user code.
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleCancelLogin = async () => {
+    try {
+      await api.request<KimiCodeLoginFlowStatus>('/login/cancel', { method: 'POST' })
+      setFlow({ status: 'idle' })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleCopyCode = async () => {
+    const code = flow?.userCode
+    if (!code) return
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard access can be denied; the code stays visible to copy by hand.
+    }
+  }
+
+  /** One account-level action on the shared pool card. */
+  const handleAccountAction = async (
+    action: 'set-primary' | 'delete' | 'clear-cooldown',
+    accountId: string,
+  ) => {
+    try {
+      setBusy(`${action}-${accountId}`)
+      setError(null)
+      const updated = await api.request<KimiCodeWebStatus>('/accounts', {
+        method: 'POST',
+        body: JSON.stringify({ action, accountId }),
+      })
+      applyStatus(updated)
+      setFlow({ status: 'idle' })
+      notifyChange()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleSetStrategy = async (strategy: AccountRotationStrategy) => {
+    try {
+      setBusy('strategy')
+      setError(null)
+      const updated = await api.request<KimiCodeWebStatus>('/accounts', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'strategy', strategy }),
+      })
+      applyStatus(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  /**
+   * Re-authorize one account.
+   *
+   * Nothing is deleted: the failure marker is cleared and the device-code flow
+   * runs again, so the account keeps its alias and place in the rotation.
+   */
+  const handleRelogin = (accountId: string) => {
+    void (async () => {
+      try {
+        const updated = await api.request<KimiCodeWebStatus>('/accounts', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'relogin', accountId }),
+        })
+        applyStatus(updated)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+        return
+      }
+      await handleLogin(accountId)
+    })()
+  }
+
+  const handleRefreshQuota = async () => {
+    try {
+      setBusy('quota')
+      setError(null)
+      // The host reports the real outcome; a failure arrives as a thrown error
+      // carrying the upstream reason rather than an indistinguishable 200.
+      const updated = await api.request<KimiCodeWebStatus>('/quota', { method: 'POST' })
+      applyStatus(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      // Re-read so the card still shows the account and any recorded reason.
+      await loadStatus(true)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleRefreshCatalog = async () => {
+    try {
+      setBusy('catalog')
+      setError(null)
+      const updated = await api.request<KimiCodeWebStatus>('/catalog/refresh', { method: 'POST' })
+      applyStatus(updated)
+      setContextDrafts(contextDraftsFor(updated))
+      notifyChange()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleTestConnection = async () => {
+    try {
+      setBusy('connection')
+      setError(null)
+      setConnectionNotice(null)
+      const result = await api.request<{ connected: boolean; latencyMs: number }>('/connection/test', {
+        method: 'POST',
+      })
+      setConnectionNotice(result.connected ? `${t.testSuccess} · ${result.latencyMs} ms` : t.testFailed)
+      // The probe is a real usage call, so the quota shown is now current.
+      await loadStatus(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const applyEnabled = async (enabledModelIds: string[]) => {
+    try {
+      const updated = await api.request<KimiCodeWebStatus>('/models', {
+        method: 'POST',
+        body: JSON.stringify({ enabledModelIds }),
+      })
+      applyStatus(updated)
+      // A model that was just checked has no draft yet; the context window
+      // section only renders enabled models.
+      setContextDrafts(contextDraftsFor(updated))
+      notifyChange()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const toggleModel = (modelId: string, checked: boolean) => {
+    if (!status) return
+    const current = status.models.filter((model) => model.enabled).map((model) => model.id)
+    const next = checked ? [...new Set([...current, modelId])] : current.filter((id) => id !== modelId)
+    void applyEnabled(next)
+  }
+
+  const setAllModels = (selectAll: boolean) => {
+    if (!status || status.models.length === 0) return
+    void applyEnabled(selectAll ? status.models.map((model) => model.id) : [])
+  }
+
+  const handleUpdateEffort = async (effort: KimiCodeReasoningEffort | null) => {
+    try {
+      const updated = await api.request<KimiCodeWebStatus>('/settings', {
+        method: 'POST',
+        body: JSON.stringify({ defaultReasoningEffort: effort }),
+      })
+      applyStatus(updated)
+      notifyChange()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleSaveContextWindow = async (modelId: string) => {
+    const raw = contextDrafts[modelId] || ''
+    const parsed = parsePositiveCapacity(raw)
+    if (parsed === null) {
+      setError(`Invalid context capacity: ${raw}`)
+      return
+    }
+    try {
+      setSavingModel(modelId)
+      setError(null)
+      const updated = await api.request<KimiCodeWebStatus>('/settings', {
+        method: 'POST',
+        body: JSON.stringify({ contextWindowOverrides: { [modelId]: parsed } }),
+      })
+      applyStatus(updated)
+      setContextDrafts((prev) => ({ ...prev, [modelId]: formatCapacity(parsed) }))
+      notifyChange()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSavingModel(null)
+    }
+  }
+
+  /** Clear one override; the row falls back to the catalog length. */
+  const handleResetContextWindow = async (modelId: string) => {
+    try {
+      setSavingModel(modelId)
+      setError(null)
+      const updated = await api.request<KimiCodeWebStatus>('/settings', {
+        method: 'POST',
+        body: JSON.stringify({ contextWindowOverrides: { [modelId]: null } }),
+      })
+      applyStatus(updated)
+      setContextDrafts((prev) => {
+        const model = updated.models.find((candidate) => candidate.id === modelId)
+        return model === undefined ? prev : { ...prev, [modelId]: formatCapacity(model.defaultContextWindow) }
+      })
+      notifyChange()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSavingModel(null)
+    }
+  }
+
+  /** Clear every stored override, including models the picker no longer shows. */
+  const handleResetAllContextWindows = async () => {
+    const models = Object.keys(status?.contextWindowOverrides ?? {})
+    if (models.length === 0) return
+    if (typeof window !== 'undefined' && !window.confirm(t.contextWindowResetAllConfirm)) return
+    try {
+      setBusy('context')
+      setError(null)
+      const updated = await api.request<KimiCodeWebStatus>('/settings', {
+        method: 'POST',
+        body: JSON.stringify({ contextWindowOverrides: Object.fromEntries(models.map((model) => [model, null])) }),
+      })
+      applyStatus(updated)
+      setContextDrafts(contextDraftsFor(updated))
+      notifyChange()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  // Only checked models get a context row; the batch restore still covers every
+  // stored override, including one left behind by a model the user unchecked.
+  const contextModels = status?.models.filter((model) => model.enabled) ?? []
+  const overrideCount = Object.keys(status?.contextWindowOverrides ?? {}).length
+
+  if (loading) {
+    return (
+      <div className="dsha-page">
+        <div className="dsha-empty">{t.loading}</div>
+      </div>
+    )
+  }
+
+  const quota = status?.quota
+  const account = status?.account
+  const models = status?.models ?? []
+  const visibleCount = models.filter((model) => model.enabled).length || 0
+  const loginPending = flow?.status === 'pending'
+  // The effort menu follows what the CHECKED models declare (see `labels.ts`),
+  // so a model that only thinks simply leaves no "thinking off" to pick.
+  const offeredEfforts = effortOptions(models)
+  const savedEffort = status?.defaultReasoningEffort ?? null
+  // A level the checked models no longer accept stays visible and flagged: the
+  // stored setting is still there, and an option that vanished would leave the
+  // select rendering nothing at all.
+  const staleEffort = savedEffort !== null && !offeredEfforts.includes(savedEffort) ? savedEffort : null
+  const thinkingOnly = thinkingOnlyModels(models.filter((model) => model.enabled))
+
+  return (
+    <div className="dsha-page">
+      <AccountPoolSection
+        accounts={status?.accounts ?? []}
+        activeAccountId={status?.activeAccountId}
+        rotationStrategy={status?.rotationStrategy ?? 'sequential'}
+        busy={busy}
+        labels={t}
+        loginBusyLabel={loginPending ? t.waitingAuthorization : busy === 'login' ? t.requestingCode : undefined}
+        onLogin={() => void handleLogin()}
+        onSetPrimary={(accountId) => void handleAccountAction('set-primary', accountId)}
+        onDelete={(accountId) => void handleAccountAction('delete', accountId)}
+        onClearCooldown={(accountId) => void handleAccountAction('clear-cooldown', accountId)}
+        onRelogin={(accountId) => handleRelogin(accountId)}
+        onSetStrategy={(strategy) => void handleSetStrategy(strategy)}
+        showQuota
+        accountCardClassName="dsha-account-card--kimi"
+        omitDetails={['lastUsed', 'expires']}
+        renderQuota={(entry, _index, now) => (
+          <KimiQuotaCard
+            quota={entry.quota}
+            // 账号自己的档位名常常是空的（号池条目建于服务端还没回过 level 的时候），
+            // 往线路级快照与凭据里退一级，字标才不至于空着。
+            planName={entry.planName ?? entry.planLabel ?? quota?.planName ?? status?.account?.planName ?? null}
+            lastUsedAt={entry.lastUsedAt}
+            expiresAt={entry.expiresAt}
+            now={now}
+            labels={t}
+          />
+        )}
+      >
+        {loginPending && (
+          <div className="dsha-device-box">
+            <strong>{t.deviceCodeSection}</strong>
+            <p className="dsha-muted">{t.deviceCodeHint}</p>
+            {flow?.userCode && (
+              <div className="dsha-code-row">
+                <span className="dsha-code">{flow.userCode}</span>
+                <button className="dsha-btn" onClick={() => void handleCopyCode()}>
+                  {copied ? t.copied : t.copyCode}
+                </button>
+              </div>
+            )}
+            {flow?.verificationUriComplete && (
+              <a
+                className="dsha-link"
+                href={flow.verificationUriComplete}
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                {flow.verificationUriComplete}
+              </a>
+            )}
+            <div className="dsha-row">
+              <span className="dsha-label">{t.codeExpires}</span>
+              <span className="dsha-value">{formatDate(flow?.expiresAt)}</span>
+            </div>
+            <div className="dsha-actions">
+              {flow?.verificationUriComplete && (
+                <a
+                  className="dsha-btn"
+                  href={flow.verificationUriComplete}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  {t.openSignInPage}
+                </a>
+              )}
+              <button className="dsha-btn" disabled={busy !== null} onClick={() => void handleCancelLogin()}>
+                {t.cancelSignIn}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 用量与额度那一整段已经并进上面的账号卡片：套餐是卡片的字标，窗口是卡片里
+            那一条进度条，读取时间在页脚。这里只剩两样没有别处可放的东西——读失败的原因，
+            和再读一次的手动入口。 */}
+        {status?.quotaError != null && <p className="dsha-notice">{status.quotaError}</p>}
+        <div className="dsha-actions">
+          <button
+            className="dsha-btn"
+            disabled={busy !== null || !status?.authenticated}
+            onClick={() => void handleRefreshQuota()}
+          >
+            {busy === 'quota' ? t.refreshingQuota : t.refreshQuota}
+          </button>
+        </div>
+      </AccountPoolSection>
+
+      <section className="dsha-group">
+        <div className="dsha-grouphead">
+          <h3>{t.connection}</h3>
+        </div>
+        <div className="dsha-row">
+          <span className="dsha-label">{t.oauthHost}</span>
+          <span className="dsha-value">{status?.oauthHost || '—'}</span>
+        </div>
+        <div className="dsha-row">
+          <span className="dsha-label">{t.codingEndpoint}</span>
+          <span className="dsha-value">{status?.codingBaseUrl || '—'}</span>
+        </div>
+        <p className="dsha-notice">
+          {status?.serving === false && status.conflict
+            ? t.routeConflict.replace('{detail}', status.conflict)
+            : t.routeOwned}
+        </p>
+        {connectionNotice && <p className="dsha-muted">{connectionNotice}</p>}
+        <div className="dsha-actions">
+          <button
+            className="dsha-btn"
+            disabled={busy !== null || !status?.authenticated}
+            onClick={() => void handleTestConnection()}
+          >
+            {busy === 'connection' ? t.testingConnection : t.testConnection}
+          </button>
+        </div>
+      </section>
+
+      <section className="dsha-group">
+        <div className="dsha-grouphead">
+          <h3>{t.cacheSection}</h3>
+        </div>
+        <p className="dsha-muted">{t.cacheDesc}</p>
+        {status?.cacheHint != null && (
+          // Shown above the card rather than inside it: the card is about how
+          // well the cache worked, and this says the next turn will not.
+          <div className="dsha-warn">{t.cacheExpired.replace('{tokens}', status.cacheHint.totalTokens.toLocaleString())}</div>
+        )}
+        {status?.cache == null ? (
+          <div className="dsha-empty">{t.cacheEmpty}</div>
+        ) : (
+          <div className="dsha-quota-card">
+            <div className="dsha-meter-wrap">
+              <div className="dsha-meter-label">
+                <span>{t.cacheHitRatio}</span>
+                <strong>
+                  {status.cache.hitRatio === null ? '—' : `${(status.cache.hitRatio * 100).toFixed(1)}%`}
+                </strong>
+              </div>
+              <div className={`dsha-meter ${(status.cache.hitRatio ?? 0) >= 0.9 ? 'dsha-meter-green' : 'dsha-meter-cyan'}`}>
+                <span style={{ width: `${Math.round((status.cache.hitRatio ?? 0) * 100)}%` }} />
+              </div>
+              <div className="dsha-meter-meta">
+                <span>{t.cacheCached}: {status.cache.cachedTokens.toLocaleString()}</span>
+                <span>{t.cacheFresh}: {status.cache.freshTokens.toLocaleString()}</span>
+                <span>{t.cacheOutput}: {status.cache.outputTokens.toLocaleString()}</span>
+                <span>{t.cacheRequests}: {status.cache.requests}</span>
+              </div>
+            </div>
+            {status.cache.lastDrift !== undefined && (
+              <div className="dsha-row">
+                <span className="dsha-label">{t.cacheDrift}</span>
+                <span className="dsha-value">{driftLabel(status.cache.lastDrift, t)}</span>
+              </div>
+            )}
+            {/* How much of the FIRST request already came out of cache. It sits
+                beside the drift row because it answers the neighbouring
+                question: drift says whether the prefix held, this says whether
+                the conversation started warm at all — the only visible trace of
+                a prefix inherited from another conversation on the same
+                account. Absent for a conversation whose first request predates
+                this measurement. */}
+            {status.cache.opening !== undefined && (
+              <div className="dsha-row">
+                <span className="dsha-label">{t.cacheOpening}</span>
+                <span className="dsha-value">
+                  {t.cacheOpeningValue
+                    .replace('{cached}', status.cache.opening.cachedTokens.toLocaleString())
+                    .replace('{tokens}', status.cache.opening.promptTokens.toLocaleString())
+                    .replace('{ratio}', `${(status.cache.opening.hitRatio * 100).toFixed(1)}%`)}
+                </span>
+              </div>
+            )}
+            {/* The write side gets its own row rather than a slot in the meter:
+                a write is billed separately from a fresh prompt token, and
+                folding it into the fresh count would make the hit ratio above
+                describe something other than what it says. Zero still renders —
+                see `tokenCount`. Only the total is drawn: the 5m/1h split the
+                response headers carry is still reported by the host, but the
+                number a user acts on is the sum, and the tier wording invited
+                more questions than it answered. */}
+            <div className="dsha-row">
+              <span className="dsha-label">{t.cacheWrite}</span>
+              <span className="dsha-value">{tokenCount(status.cache.cacheWriteTokens, t)}</span>
+            </div>
+            {status.cache.warmup !== undefined && (
+              <div className="dsha-row">
+                <span className="dsha-label">{t.cacheWarmupLabel}</span>
+                <span className="dsha-value">
+                  {(status.cache.warmup.warmup ? t.cacheWarmupWarming : t.cacheWarmupSettled)
+                    .replace('{hits}', String(status.cache.warmup.consecutiveHits))
+                    .replace('{required}', String(status.cache.warmup.requiredHits))
+                    .replace('{chars}', status.cache.warmup.maxChars.toLocaleString())}
+                </span>
+              </div>
+            )}
+            {/* The image budget gets its own row: the cap and the low-water
+                mark are set in bytes, and the sticky-offload count is what
+                explains a prefix that keeps rebuilding itself. */}
+            {status.cache.imageBudget !== undefined && (
+              <div className="dsha-row">
+                <span className="dsha-label">{t.cacheImageBudgetLabel}</span>
+                <span className="dsha-value">
+                  {(status.cache.imageBudget.droppedImages > 0
+                    ? t.cacheImageBudgetDropped
+                    : t.cacheImageBudgetValue)
+                    .replace('{used}', formatByteSize(status.cache.imageBudget.requestImageBytes))
+                    .replace('{budget}', formatByteSize(status.cache.imageBudget.budgetBytes))
+                    .replace('{low}', formatByteSize(status.cache.imageBudget.lowBudgetBytes))
+                    .replace('{dropped}', String(status.cache.imageBudget.droppedImages))}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* The compaction model is the one setting on this tab that is not the
+          line's own: the host re-routes a compaction only for kimi-code
+          sessions. The card draws its own `dsha-group` section, so nothing is
+          wrapped around it here. */}
+      <CompactionRouteCard
+        api={subscriptionApi}
+        preferences={compactionPreferences}
+        labels={{
+          title: t.compactionRoute,
+          hint: t.compactionRouteHint,
+          provider: t.compactionRouteProvider,
+          model: t.compactionRouteModel,
+          save: t.compactionRouteSave,
+          clear: t.compactionRouteClear,
+          change: t.compactionRouteChange,
+          follow: t.compactionRouteFollow,
+          saved: t.compactionRouteSaved,
+          failed: t.compactionRouteFailed,
+          noVideo: t.compactionRouteNoVideo,
+          noImage: t.compactionRouteNoImage,
+          empty: t.compactionRouteEmpty,
+        }}
+        onSaved={setCompactionPreferences}
+      />
+
+      <section className="dsha-group">
+        <div className="dsha-grouphead">
+          <h3>{t.modelsSection}</h3>
+          <button className="dsha-btn" disabled={busy !== null} onClick={() => void handleRefreshCatalog()}>
+            {busy === 'catalog' ? t.refreshingCatalog : t.refreshCatalog}
+          </button>
+        </div>
+        <p className="dsha-muted dsha-models-hint">{t.modelsHint}</p>
+        <ModelChecklist
+          items={models.map((model: KimiCodeModelOption) => ({
+            id: model.id,
+            name: model.name,
+            hint: [
+              wireLabel(model.wire, t),
+              ...(model.thinkingType === 'only' ? [t.capThinkingOnly] : []),
+              ...(model.supportsVideo ? [t.capVideo] : []),
+              ...(model.supportsDynamicTools ? [t.capDynamicTools] : []),
+              ...(model.minimumPlan ? [t.capPlan.replace('{plan}', model.minimumPlan)] : []),
+            ].join(' · '),
+            enabled: model.enabled,
+          }))}
+          busy={busy !== null}
+          onToggle={toggleModel}
+          onToggleAll={setAllModels}
+          labels={{ selectAll: t.selectAll, clearAll: t.unselectAll, list: t.modelsSection }}
+        />
+        {status !== null && models.length > 0 && <KimiModelCapabilities models={models} />}
+      </section>
+
+      <section className="dsha-group">
+        <div className="dsha-grouphead">
+          <h3>{t.enhanced}</h3>
+        </div>
+        <div className="dsha-pref-row">
+          <div>
+            <strong>{t.defaultReasoningEffort}</strong>
+            <p className="dsha-muted">{t.defaultReasoningEffortHint}</p>
+          </div>
+          <select
+            className="dsha-select"
+            aria-label={t.defaultReasoningEffort}
+            value={status?.defaultReasoningEffort ?? ''}
+            disabled={busy !== null}
+            onChange={(event) => {
+              const value = event.currentTarget.value
+              void handleUpdateEffort(value === '' ? null : (value as KimiCodeReasoningEffort))
+            }}
+          >
+            <option value="">{t.defaultEffortAuto}</option>
+            {offeredEfforts.map((effort) => (
+              <option key={effort} value={effort}>{effortLabel(effort, t)}</option>
+            ))}
+            {staleEffort !== null && (
+              <option value={staleEffort}>
+                {effortLabel(staleEffort, t)} · {t.effortNotOffered}
+              </option>
+            )}
+          </select>
+        </div>
+        {thinkingOnly.length > 0 && (
+          // Said on the card rather than left to the missing option: the next
+          // question a user asks is "why is thinking off gone", and the answer
+          // is that the service rejects it with HTTP 400.
+          <p className="dsha-notice">
+            {t.effortThinkingOnlyNote.replace('{models}', thinkingOnly.map((model) => model.name).join(' · '))}
+          </p>
+        )}
+        <div className="dsha-pref-row">
+          <div>
+            <strong>{t.cacheNote}</strong>
+            <p className="dsha-muted">{t.cacheNoteHint}</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="dsha-group">
+        <div className="dsha-grouphead">
+          <h3>{t.contextWindowSection}</h3>
+        </div>
+        <p className="dsha-muted">{t.contextWindowHint}</p>
+        <ContextWindowEditor
+          rows={contextModels.map((model: KimiCodeModelOption) => ({
+            id: model.id,
+            name: model.name,
+            draft: contextDrafts[model.id] ?? '',
+            meta: model.defaultContextWindow < model.contextWindow
+              ? formatCapacity(model.contextWindow)
+              : undefined,
+            inputLabel: `${model.name} context window`,
+            hasOverride: status?.contextWindowOverrides[model.id] !== undefined,
+            saving: savingModel === model.id,
+          }))}
+          labels={{
+            tokens: t.tokens,
+            save: t.save,
+            saving: t.saving,
+            reset: t.contextWindowReset,
+            resetAll: t.contextWindowResetAll,
+            empty: t.contextWindowNoneEnabled,
+          }}
+          busy={busy !== null}
+          overrideCount={overrideCount}
+          metaClassName="dsha-model-meta"
+          onDraftChange={(id, draft) => setContextDrafts((prev) => ({ ...prev, [id]: draft }))}
+          onCommit={(id) => void handleSaveContextWindow(id)}
+          onReset={(id) => void handleResetContextWindow(id)}
+          onResetAll={() => void handleResetAllContextWindows()}
+        />
+      </section>
+
+      {error && (
+        <div className="dsha-error">
+          <div>{error}</div>
+        </div>
+      )}
+    </div>
+  )
+}
